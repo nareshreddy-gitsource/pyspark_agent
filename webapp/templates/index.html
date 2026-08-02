@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spark Convert — local script → PySpark</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="logo-mark">⚡</span>
+    <span class="logo-text">Spark Convert</span>
+  </div>
+  <div class="topbar-right">
+    <span class="status-pill">
+      <span class="dot dot-live"></span>
+      running locally
+    </span>
+    <span class="model-pill">{{ model_name }}</span>
+    <span class="attempts-pill">max {{ max_attempts }} attempts</span>
+  </div>
+</header>
+
+<main class="stage">
+
+  <section id="dropzone" class="dropzone">
+    <input type="file" id="fileInput" accept=".py,.sql,.r" multiple hidden>
+    <div class="dropzone-inner">
+      <div class="dropzone-icon">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M12 3v12m0 0l-4-4m4 4l4-4" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <p class="dropzone-title">Drop a script to convert</p>
+      <p class="dropzone-sub">.py &nbsp;·&nbsp; .sql &nbsp;·&nbsp; .r — the agent generates, checks, and self-repairs before handing it back</p>
+      <button class="browse-btn" id="browseBtn" type="button">Choose file</button>
+    </div>
+  </section>
+
+  <section class="queue-section">
+    <div class="queue-header" id="queueHeader" style="display:none;">
+      <span class="queue-title">Conversions</span>
+      <span class="queue-count" id="queueCount"></span>
+    </div>
+    <div class="queue" id="queue"></div>
+    <div class="queue-empty" id="queueEmpty">
+      <div class="queue-empty-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="12" cy="12" r="9"/>
+        </svg>
+      </div>
+      <span class="queue-empty-title">No conversions yet</span>
+      <span class="queue-empty-sub">Drop a .py, .sql, or .r file above to see it generate, validate, and export in real time.</span>
+    </div>
+  </section>
+
+</main>
+
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+<footer class="footbar">
+  <span>Nothing leaves this machine — every conversion runs through your local Ollama instance.</span>
+</footer>
+
+<template id="jobTemplate">
+  <article class="job" data-job-id="">
+
+    <div class="job-header">
+      <div class="job-header-left">
+        <svg class="job-file-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke-linejoin="round"/>
+          <path d="M14 2v6h6" stroke-linejoin="round"/>
+        </svg>
+        <span class="job-filename"></span>
+        <span class="job-status-icon"></span>
+      </div>
+      <div class="job-header-right">
+        <span class="job-attempt-badge"></span>
+        <span class="job-elapsed"></span>
+        <button class="job-stop-btn" type="button" title="Stop this conversion">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Attempt dots: filled as each attempt runs -->
+    <div class="job-attempt-track"></div>
+
+    <div class="job-detail-row">
+      <span class="job-detail-text"></span>
+    </div>
+
+    <pre class="job-live-preview"></pre>
+
+    <div class="job-actions">
+      <button class="job-preview-btn" type="button">View code</button>
+      <a class="job-download-nb-btn" href="#" download>Download .ipynb</a>
+      <a class="job-download-html-btn" href="#" download>Download .html</a>
+      <a class="job-download-btn" href="#" download>Download .py</a>
+    </div>
+    <pre class="job-preview-pane"></pre>
+
+    <div class="job-repair-box">
+      <p class="job-repair-label">Ran this in Databricks and hit an error? Paste it below to have the agent fix it.</p>
+      <textarea class="job-repair-input" placeholder="Paste the Databricks error message here…" rows="3"></textarea>
+      <button class="job-repair-submit" type="button">Fix with this error</button>
+    </div>
+  </article>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
