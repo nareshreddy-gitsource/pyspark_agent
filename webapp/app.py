@@ -150,6 +150,18 @@ class _Cancelled(Exception):
     pass
 
 
+@app.route("/settings", methods=["GET", "POST"])
+def settings():
+    global MAX_ATTEMPTS
+    if request.method == "POST":
+        data = request.get_json(force=True) or {}
+        new_max = data.get("max_attempts")
+        if isinstance(new_max, int) and 1 <= new_max <= 10:
+            MAX_ATTEMPTS = new_max
+        return jsonify({"ok": True, "model": MODEL_NAME, "max_attempts": MAX_ATTEMPTS})
+    return jsonify({"model": MODEL_NAME, "max_attempts": MAX_ATTEMPTS})
+
+
 @app.route("/")
 def index():
     return render_template("index.html", model_name=MODEL_NAME, max_attempts=MAX_ATTEMPTS)
