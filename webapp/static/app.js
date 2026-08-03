@@ -1,18 +1,84 @@
+// ================= Element refs =================
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
 const browseBtn = document.getElementById('browseBtn');
 const queue = document.getElementById('queue');
 const queueEmpty = document.getElementById('queueEmpty');
-const queueHeader = document.getElementById('queueHeader');
-const queueCount = document.getElementById('queueCount');
 const jobTemplate = document.getElementById('jobTemplate');
+const historyItemTemplate = document.getElementById('historyItemTemplate');
 const toastStack = document.getElementById('toastStack');
+
+const modalOverlay = document.getElementById('modalOverlay');
+const modalClose = document.getElementById('modalClose');
+const addScriptBtn = document.getElementById('addScriptBtn');
+const addScriptBtnTop = document.getElementById('addScriptBtnTop');
+
+const sidebar = document.getElementById('sidebar');
+const sidebarScrim = document.getElementById('sidebarScrim');
+const menuBtn = document.getElementById('menuBtn');
+const sidebarClose = document.getElementById('sidebarClose');
+
+const attemptsDown = document.getElementById('attemptsDown');
+const attemptsUp = document.getElementById('attemptsUp');
+const attemptsValue = document.getElementById('attemptsValue');
+
+const historyList = document.getElementById('historyList');
+const historyEmpty = document.getElementById('historyEmpty');
+const historyCount = document.getElementById('historyCount');
 
 const jobElements = {};
 const jobTimers = {};
 const jobMaxAttemptsSeen = {};
+const historyElements = {};
 
 const TERMINAL_STATUSES = ['done', 'failed', 'stopped', 'needs_repair'];
+
+// ================= Modal =================
+
+function openModal() {
+  modalOverlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeModal() {
+  modalOverlay.classList.remove('open');
+  document.body.style.overflow = '';
+}
+[addScriptBtn, addScriptBtnTop].forEach(btn => btn && btn.addEventListener('click', openModal));
+modalClose.addEventListener('click', closeModal);
+modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && modalOverlay.classList.contains('open')) closeModal(); });
+
+// ================= Sidebar (mobile) =================
+
+function openSidebar() {
+  sidebar.classList.add('open');
+  sidebarScrim.classList.add('show');
+}
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  sidebarScrim.classList.remove('show');
+}
+menuBtn.addEventListener('click', openSidebar);
+sidebarClose.addEventListener('click', closeSidebar);
+sidebarScrim.addEventListener('click', closeSidebar);
+
+// ================= Attempts stepper =================
+
+let currentMaxAttempts = parseInt(attemptsValue.textContent, 10) || 3;
+
+function updateMaxAttempts(delta) {
+  const next = Math.max(1, Math.min(10, currentMaxAttempts + delta));
+  if (next === currentMaxAttempts) return;
+  currentMaxAttempts = next;
+  attemptsValue.textContent = next;
+  fetch('/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_attempts: next }),
+  }).catch(() => showToast('error', 'Could not save', 'Setting change did not reach the server.'));
+}
+attemptsDown.addEventListener('click', () => updateMaxAttempts(-1));
+attemptsUp.addEventListener('click', () => updateMaxAttempts(1));
 
 // ================= Toasts =================
 
@@ -37,10 +103,7 @@ function showToast(type, title, message, duration = 5000) {
   toast.querySelector('.toast-title').textContent = title;
   toast.querySelector('.toast-msg').textContent = message;
 
-  const dismiss = () => {
-    toast.classList.add('leaving');
-    setTimeout(() => toast.remove(), 200);
-  };
+  const dismiss = () => { toast.classList.add('leaving'); setTimeout(() => toast.remove(), 200); };
   toast.querySelector('.toast-close').addEventListener('click', dismiss);
 
   toastStack.appendChild(toast);
@@ -61,9 +124,8 @@ dropzone.addEventListener('click', (e) => { if (e.target !== browseBtn) fileInpu
 browseBtn.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
 fileInput.addEventListener('change', () => { handleFiles(fileInput.files); fileInput.value = ''; });
 
-// Also allow paste-to-upload for convenience (paste a .py/.sql file)
 window.addEventListener('paste', (e) => {
-  const files = e.clipboardData?.files;
+  const files = e.clipboardData && e.clipboardData.files;
   if (files && files.length) handleFiles(files);
 });
 
@@ -74,13 +136,12 @@ function handleFiles(fileList) {
   const files = Array.from(fileList);
   if (!files.length) return;
 
+  closeModal();
+
   let rejected = 0;
   files.forEach(file => {
     const ext = '.' + file.name.split('.').pop().toLowerCase();
-    if (!allowed.includes(ext)) {
-      rejected++;
-      return;
-    }
+    if (!allowed.includes(ext)) { rejected++; return; }
     uploadFile(file);
   });
 
@@ -100,6 +161,7 @@ function uploadFile(file) {
   jobElements[tempId] = el;
   applyStatusClass(tempId, 'queued');
   setDetailText(tempId, 'Uploading…');
+  addHistoryItem(tempId, file.name, 'queued');
 
   fetch('/upload', { method: 'POST', body: formData })
     .then(res => res.json().then(data => ({ ok: res.ok, data })))
@@ -114,6 +176,7 @@ function uploadFile(file) {
       el.dataset.jobId = realId;
       jobElements[realId] = el;
       delete jobElements[tempId];
+      renameHistoryItem(tempId, realId);
       wireJobActions(realId, el);
       startTimer(realId, el);
       pollStatus(realId, file.name);
@@ -129,15 +192,13 @@ function pollStatus(jobId, filename) {
   let consecutiveErrors = 0;
   const interval = setInterval(() => {
     fetch(`/status/${jobId}`)
-      .then(res => {
-        if (!res.ok) throw new Error(`Server responded ${res.status}`);
-        return res.json();
-      })
+      .then(res => { if (!res.ok) throw new Error(`Server responded ${res.status}`); return res.json(); })
       .then(job => {
         consecutiveErrors = 0;
         if (!job || (job.error && !job.status)) { clearInterval(interval); return; }
-        const prevStatus = jobElements[jobId]?.dataset.lastStatus;
+        const prevStatus = jobElements[jobId] ? jobElements[jobId].dataset.lastStatus : undefined;
         applyJobState(jobId, job);
+        updateHistoryStatus(jobId, job.status);
         if (jobElements[jobId]) jobElements[jobId].dataset.lastStatus = job.status;
 
         if (job.status !== prevStatus) {
@@ -209,10 +270,7 @@ function wireJobActions(jobId, el) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: errorText }),
     })
-      .then(res => {
-        if (!res.ok) throw new Error('Server error');
-        return res.json();
-      })
+      .then(res => { if (!res.ok) throw new Error('Server error'); return res.json(); })
       .then(() => {
         repairSubmit.disabled = false;
         repairSubmit.textContent = 'Fix with this error';
@@ -350,24 +408,64 @@ function setDetailText(jobId, text) {
   el.querySelector('.job-detail-text').textContent = text;
 }
 
+// ================= History (sidebar) =================
+
+function addHistoryItem(jobId, filename, status) {
+  historyEmpty.style.display = 'none';
+  const frag = historyItemTemplate.content.cloneNode(true);
+  const btn = frag.querySelector('.history-item');
+  btn.querySelector('.history-item-name').textContent = filename;
+  btn.querySelector('.history-item-name').title = filename;
+  btn.querySelector('.history-item-icon').classList.add(status === 'queued' ? 'active' : status);
+  btn.dataset.jobId = jobId;
+  btn.addEventListener('click', () => {
+    const target = jobElements[btn.dataset.jobId];
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.style.outline = '2px solid var(--accent)';
+      setTimeout(() => { target.style.outline = ''; }, 1200);
+    }
+    closeSidebar();
+  });
+  historyList.prepend(btn);
+  historyElements[jobId] = btn;
+  updateHistoryCount();
+}
+
+function renameHistoryItem(oldId, newId) {
+  const el = historyElements[oldId];
+  if (!el) return;
+  el.dataset.jobId = newId;
+  historyElements[newId] = el;
+  delete historyElements[oldId];
+}
+
+function updateHistoryStatus(jobId, status) {
+  const el = historyElements[jobId];
+  if (!el) return;
+  const icon = el.querySelector('.history-item-icon');
+  icon.classList.remove('active', 'done', 'failed', 'needs_repair');
+  icon.classList.add(['generating', 'validating', 'queued'].includes(status) ? 'active' : status);
+}
+
+function updateHistoryCount() {
+  const n = Object.keys(historyElements).length;
+  historyCount.textContent = n ? String(n) : '';
+}
+
 // ================= Queue chrome =================
 
 function showQueue() {
-  queueEmpty.style.display = 'none';
-  queueHeader.style.display = 'flex';
-  updateQueueCount();
+  queueEmpty.classList.remove('show');
 }
 
-function updateQueueCount() {
-  const n = queue.children.length;
-  queueCount.textContent = n === 1 ? '1 file' : `${n} files`;
-}
+if (!queue.children.length) queueEmpty.classList.add('show');
 
 const origPrepend = queue.prepend.bind(queue);
-queue.prepend = function(node) { origPrepend(node); updateQueueCount(); };
+queue.prepend = function(node) { origPrepend(node); showQueue(); };
 
 // ================= Connectivity check =================
-// Warn early if the backend seems unreachable at all (e.g. Ollama/Flask not running)
+
 window.addEventListener('load', () => {
   fetch('/jobs').catch(() => {
     showToast('error', 'Server unreachable', 'Could not connect to the Spark Convert backend. Make sure python webapp/app.py is running.', 0);
