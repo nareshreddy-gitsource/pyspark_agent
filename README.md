@@ -1,8 +1,9 @@
-# PySpark Conversion Agent (Local, via Ollama)
+# Spark Convert — PySpark Conversion Agent (Local, via Ollama)
 
 A self-correcting agent that converts scripts (Python/pandas, SQL, R, etc.)
 into PySpark code using a locally-running Ollama model. No API keys, no
-internet calls to a hosted LLM required after setup.
+internet calls to a hosted LLM required after setup — everything runs on
+your own machine.
 
 ## What makes this an "agent" (not just a script)
 
@@ -13,177 +14,233 @@ It runs a **generate → validate → repair loop**, not a single one-shot call:
    Python syntax immediately, no Spark/Java installation needed)
 3. **Repair** — if invalid, the broken code + the exact error is sent back
    to the model with a request to fix it, and this repeats up to
-   `max_attempts` times (default 3)
+   `max_attempts` times (default 3, adjustable in the sidebar)
 4. **Human-in-the-loop repair** — since real Spark execution errors (bad
    column names, logic issues) can't be caught by syntax checking alone,
    you can run the exported notebook in Databricks, paste any error back
    into the app, and the agent will do one more repair pass using that
    real error message
 
-This means the code you get back has already passed at least a basic
-correctness check, and you have a fast path to fix real runtime issues
-without hand-editing anything yourself.
+You can feed it files two ways — drag-and-drop in the browser, **or** drop
+files straight into the `inbox\` folder while the server is running; both
+paths use the identical agent loop and show up in the same browser UI.
 
 > **Note for teams**: This app runs entirely on your own machine, calling a
 > locally-installed Ollama model. There's no shared server — **each person
 > who wants to use it needs to clone this repo and set up Ollama on their
-> own computer** (see Setup below). Nothing here talks to the internet
-> except during the one-time model download.
+> own computer** (see Installation below). Nothing here talks to the
+> internet except during the one-time model download.
 
-## Setup
+---
 
-1. **Install Ollama**
-   https://ollama.com/download
+## Installation (Windows / PowerShell)
 
-2. **Pull a code-capable model**
-   ```bash
-   ollama pull qwen2.5-coder:14b
-   ```
-   Alternatives depending on your hardware:
-   - Lighter / less RAM (8GB or less): `qwen2.5-coder:7b`
-   - Comfortable on 16GB RAM: `qwen2.5-coder:14b` (recommended default)
-   - Stronger / more RAM+GPU (24GB+): `qwen2.5-coder:32b`, `deepseek-coder-v2:16b`
+These steps assume a fresh machine. Skip any step you've already done.
 
-3. **Clone this repo**
-   ```bash
-   git clone <your-repo-url>
-   cd pyspark_agent
-   ```
+### 1. Install Ollama
 
-4. **Install Python dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+Download and run the installer from **https://ollama.com/download**.
 
-5. **Make sure Ollama is running**
-   It usually starts automatically after install. If not:
-   ```bash
-   ollama serve
-   ```
+### 2. (Optional but recommended) Point model storage at a drive with space
 
-## Usage — Option A: Browser UI (recommended)
+Ollama models are large (9–19GB+). If your `C:` drive is tight on space,
+redirect model storage to another drive **before** pulling any models.
+Open PowerShell **as Administrator**:
 
-Start the web app:
-```bash
-python webapp/app.py
+```powershell
+[System.Environment]::SetEnvironmentVariable("OLLAMA_MODELS", "E:\ollama\models", "Machine")
+mkdir E:\ollama\models
 ```
 
-Then open **http://localhost:5050** in your browser. Drag a script onto
-the page. You'll see the agent work through it live:
+Then **restart your PC** so the change fully takes effect (a simple app
+restart is not reliably enough for this env var to propagate to Ollama's
+background service).
 
-- **Attempt track** — a segmented bar showing which attempt is currently
-  running, and whether earlier attempts passed or failed validation
-- **Live preview** — the code streaming in as the model generates it
-- **Stop button** — cancel an in-progress conversion at any point
+After rebooting, confirm the variable is set:
+```powershell
+echo $env:OLLAMA_MODELS
+```
+It should print `E:\ollama\models`.
 
-When it finishes, you get three download options:
-- **`.py`** — the raw converted script
-- **`.ipynb`** — a Databricks-importable notebook with the original
-  source (for reference), the converted code, and a summary of how many
-  attempts it took
-- **`.html`** — a standalone report with the full attempt history
-  (useful for sharing or keeping a record of what the agent tried)
+### 3. Pull a code-capable model
 
-**If Databricks execution fails** (e.g. after importing the `.ipynb` and
-running it on serverless compute): paste the error message into the
-"Ran this in Databricks and hit an error?" box on the job card, and the
-agent will do one more repair pass using that exact error.
-
-Different model, port, or max attempts:
-```bash
-python webapp/app.py --model qwen2.5-coder:32b --port 5050 --max-attempts 5
+```powershell
+ollama pull qwen2.5-coder:14b
 ```
 
-To stop it, go to its terminal window and press `Ctrl+C`.
+Pick the size based on your RAM:
 
-## Usage — Option B: Drag-and-drop folder watcher (no browser, single-shot)
+| Model | Approx. size | Recommended RAM |
+|---|---|---|
+| `qwen2.5-coder:7b` | ~4.5 GB | 8GB or less |
+| `qwen2.5-coder:14b` | ~9 GB | 16GB (recommended default) |
+| `qwen2.5-coder:32b` | ~19 GB | 24GB+ |
 
-Note: the folder watcher (`watch_agent.py`) still uses the simpler
-single-shot generation, not the full agent loop. Use the browser UI
-(Option A) if you want validation and repair.
+Using a model too large for your RAM causes heavy disk swapping and can
+make a single conversion take 20+ minutes instead of under a minute — if
+generation feels extremely slow, that's almost always the cause. Switch to
+a smaller model.
 
-Start the watcher once:
-```bash
-python watch_agent.py
+Confirm the model downloaded:
+```powershell
+ollama list
 ```
 
-Leave that terminal window running in the background. Then, anytime you
-want to convert a file, just **drag it into the `inbox/` folder** (in your
-file explorer / Finder, no terminal needed). Within a couple seconds:
+### 4. Install Python
 
-- The converted PySpark code appears in `outbox/<name>_pyspark.py`
-- The original file moves to `processed/` (so it won't be re-converted)
-- If conversion fails (e.g. Ollama isn't running), the file moves to
-  `failed/` and the error is printed in the terminal window
-
-Supported drop-in file types: `.py`, `.sql`, `.r`
-
-To use a different model:
-```bash
-python watch_agent.py --model deepseek-coder-v2:16b
+Check if you already have it:
+```powershell
+python --version
 ```
 
-**Running either option automatically on startup** (optional):
-- **Windows**: create a shortcut (or a small `.bat` file) in your Startup
-  folder (`shell:startup` in the Run dialog).
-- **Mac**: add it as a Login Item, or use `launchd`.
-- **Linux**: add a `systemd --user` service or an autostart `.desktop` entry.
+If you see an error like *"Python was not found"*, install it from
+**https://www.python.org/downloads/** — on the first installer screen,
+**make sure to check "Add Python to PATH"** before clicking Install. This
+is the most commonly missed step. Close and reopen PowerShell afterward.
 
-## Usage — Option C: Command line (one-off conversions)
+### 5. Clone this repo
 
-```bash
-python pyspark_converter.py examples/sample_pandas.py
-python pyspark_converter.py examples/sample_query.sql
+```powershell
+git clone <your-repo-url>
+cd pyspark_agent
 ```
 
-Custom output path:
-```bash
-python pyspark_converter.py examples/sample_pandas.py -o converted/output.py
+### 6. Install Python dependencies
+
+```powershell
+pip install -r requirements.txt
 ```
 
-Different model:
-```bash
-python pyspark_converter.py examples/sample_pandas.py -m deepseek-coder-v2:16b
+### 7. Make sure Ollama is running
+
+It usually starts automatically after install and stays running in the
+background (system tray icon). If it's not running, open the Ollama app
+once, or run:
+```powershell
+ollama serve
 ```
 
-Remote Ollama host:
-```bash
-python pyspark_converter.py examples/sample_pandas.py --host http://192.168.1.10:11434
+---
+
+## Running it
+
+```powershell
+python webapp\app.py
 ```
 
-## Folder structure (created automatically on first run)
+Then open **http://localhost:5050** in your browser.
+
+To use a specific model, port, or max repair attempts:
+```powershell
+python webapp\app.py --model qwen2.5-coder:14b --port 5050 --max-attempts 3
+```
+
+To stop the server, go back to its PowerShell window and press `Ctrl+C`.
+
+---
+
+## Using the app
+
+There are **two ways to add a file** — both run through the same agent
+loop and both show up as job cards in the browser:
+
+- **Browser upload**: click **Add script** (top of the sidebar) to open
+  the upload dialog — drag a `.py`, `.sql`, or `.r` file in, or click
+  "Choose file".
+- **Inbox folder**: drag a file into the `inbox\` folder in your file
+  explorer while `app.py` is running. It's picked up automatically within
+  a couple seconds, moved into `webapp\uploads\`, and appears in the
+  browser as a job card tagged **inbox** — no need to have the browser
+  tab open or focused for this to work, since watching happens on the
+  server, not in JavaScript.
+
+Once a job is running, each card shows a live **attempt track** (segmented
+bar: which attempt is running, which passed/failed), a **live preview** of
+code streaming in from the model, and a **stop button** to cancel
+mid-generation.
+
+- **Settings** (sidebar): see the active model, and adjust **max
+  attempts** with the +/− stepper — this takes effect for the next
+  conversion.
+- **History** (sidebar): every file converted this session, color-coded
+  by status. Click one to jump to its card.
+- When a conversion finishes, the **`.ipynb`** notebook version is
+  **automatically saved to `outbox\`** — no download click needed. If a
+  file with that name already exists there, it's saved alongside it as
+  `name (1).ipynb`, `name (2).ipynb`, etc. — nothing is ever overwritten.
+- You also get three download options in the browser — clicking any of
+  them saves a copy to `outbox\` too (same collision-safe renaming):
+  - **`.ipynb`** — same format as the auto-saved copy
+  - **`.html`** — a standalone report with the full attempt history
+  - **`.py`** — the raw converted script
+- **If Databricks execution fails** after importing the `.ipynb` and
+  running it on serverless compute: paste the error message into the
+  "Ran this in Databricks and hit an error?" box on that job's card, and
+  the agent does one more repair pass using that exact error.
+
+---
+
+## Other ways to run it
+
+### Command line, one-off conversion (no validation/repair loop)
+
+```powershell
+python pyspark_converter.py examples\sample_pandas.py
+python pyspark_converter.py examples\sample_query.sql -o converted\output.py -m qwen2.5-coder:14b
+```
+
+### Standalone folder watcher, no browser at all (legacy)
+
+`watch_agent.py` is a lighter-weight, browser-free version of the inbox
+folder watching now built into `app.py`. Use this only if you specifically
+don't want the browser UI running:
+
+```powershell
+python watch_agent.py --model qwen2.5-coder:14b
+```
+
+Note: this standalone version uses simple single-shot generation, no
+validate/repair loop, no notebook export — it's simpler by design. If
+`app.py` is running, its built-in inbox watcher does everything this does
+plus validation, repair, and exports, so there's no need to run both.
+
+---
+
+## Folder structure
 
 ```
 pyspark_agent/
-├── inbox/       <- (watch_agent) drag files in here
-├── outbox/      <- (watch_agent) converted files appear here
-├── processed/   <- (watch_agent) originals moved here after success
-├── failed/      <- (watch_agent) originals moved here on error
+├── inbox/       <- drag files in here (watched automatically by app.py)
+├── outbox/      <- .ipynb auto-saved here on completion; .py/.html land
+│                    here too if downloaded from the browser. Collision-safe
+│                    renaming, never overwrites.
 ├── webapp/
-│   ├── app.py           <- browser UI server (full agent loop)
+│   ├── app.py           <- browser UI server + inbox watcher (full agent loop)
 │   ├── templates/
 │   ├── static/
-│   ├── uploads/         <- (web UI) uploaded originals
-│   └── converted/       <- (web UI) converted .py / .ipynb / .html output
-├── watch_agent.py       <- single-shot folder watcher (no validation loop)
-├── agent.py             <- the generate -> validate -> repair loop + notebook/html export
+│   ├── uploads/         <- (internal) uploaded/moved originals
+│   └── converted/       <- (internal) working copies before outbox save
+├── watch_agent.py       <- standalone legacy folder watcher (no validation loop)
+├── agent.py             <- generate -> validate -> repair loop + notebook/html export
 ├── pyspark_converter.py <- shared prompt-building + CLI single-shot converter
 └── examples/
 ```
 
+---
+
 ## How it works
 
 1. Reads the source script.
-2. Builds a prompt with:
-   - A system prompt describing PySpark conversion rules
-   - A handful of pandas→PySpark and SQL→PySpark reference patterns (few-shot examples)
-   - A language-specific hint based on the file extension (.py, .sql, .r)
-3. Sends it to your local Ollama model, streaming the response token by token.
+2. Builds a prompt with a system prompt describing PySpark conversion
+   rules, pandas→PySpark / SQL→PySpark reference patterns, and a
+   language-specific hint based on file extension.
+3. Sends it to your local Ollama model, streaming the response token by
+   token (shown live in the UI).
 4. Strips markdown fences / stray commentary from the model's response.
 5. Validates the result with `ast.parse()`.
 6. If invalid: sends the broken code + the exact syntax error back to the
-   model as a follow-up message in the same conversation, asking for a fix.
-   Repeats up to `max_attempts` times.
+   model as a follow-up message, asking for a fix. Repeats up to
+   `max_attempts` times.
 7. Writes the final code, plus notebook and HTML exports, to disk.
 8. If you later report a real Databricks execution error, does one more
    repair pass using that specific error message.
@@ -191,35 +248,42 @@ pyspark_agent/
 ## Notes / limitations
 
 - **Validation is syntax-level only** (`ast.parse()`), not execution-level.
-  It catches broken Python (missing parens, bad indentation, undefined
-  syntax) but not logic errors, wrong column names, or Spark-specific
-  runtime issues — those only show up when you actually run the code
-  against real data, which is what the Databricks human-in-the-loop step
-  is for.
-- Quality of conversion depends heavily on the model. If you're getting
-  weak results, try a larger model (14b → 32b, RAM permitting) or add more
-  few-shot examples to `BASE_SYSTEM_PROMPT` in `pyspark_converter.py` that
-  match your specific codebase's patterns.
-- For very large scripts, you may hit context-length limits depending on
-  the model. Consider splitting large files into logical chunks (e.g., by
-  function) and converting separately.
-- Each repair attempt re-sends the full conversation history to the model,
-  so more attempts = more tokens = slower. `max_attempts=3` (default) is
-  usually a reasonable ceiling.
+  It catches broken Python but not logic errors, wrong column names, or
+  Spark-specific runtime issues — those only surface when you actually run
+  the code, which is what the Databricks human-in-the-loop step is for.
+- Quality of conversion depends heavily on the model. If results are weak,
+  try a larger model (RAM permitting) or add more few-shot examples to
+  `BASE_SYSTEM_PROMPT` in `pyspark_converter.py` matching your codebase's
+  specific patterns.
+- Very large scripts may hit context-length limits depending on the model;
+  consider splitting into logical chunks.
+- Each repair attempt re-sends the full conversation history, so more
+  attempts = more tokens = slower.
+- This app runs a Flask dev server (`app.run(debug=False)`), suitable for
+  local/personal use. Not intended to be exposed to the internet or run as
+  a shared multi-user server as-is.
 
 ## Extending
 
-Ideas if you want to build this out further:
-- **Full automation with Databricks API**: instead of manually pasting
-  errors back, use a Databricks Personal Access Token + the Jobs/Command
-  Execution API to actually run the generated code on serverless compute
-  and feed errors back automatically — turning the human-in-the-loop step
-  into a fully automated one. Ask if you want this built; it just needs a
-  `DATABRICKS_TOKEN` and `DATABRICKS_HOST` environment variable and a
-  REST call added to `agent.py`.
-- **Batch mode**: loop over a directory of scripts and convert them all,
-  running the agent loop on each.
-- **Local execution validation**: if you install PySpark + Java locally,
-  swap the `ast.parse()` check in `agent.py` for an actual `spark-submit`
-  or local `SparkSession` run against small mock data — catches more than
-  syntax errors, but needs local infrastructure.
+- **Full Databricks API automation**: replace the manual paste-error step
+  with a Databricks Personal Access Token + Jobs/Command Execution API
+  call to run generated code automatically and feed errors back without
+  a human in the loop. Needs `DATABRICKS_TOKEN` / `DATABRICKS_HOST` env
+  vars and a REST call added to `agent.py`.
+- **Batch mode**: loop over a directory of scripts, running the agent loop
+  on each.
+- **Local execution validation**: install PySpark + Java locally and swap
+  the `ast.parse()` check in `agent.py` for an actual local `SparkSession`
+  run against mock data — catches more than syntax errors.
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `ollama` command not found | Ollama isn't installed, or terminal needs restarting after install |
+| `pip` not recognized | Python isn't installed, or wasn't added to PATH during install |
+| Model download went to C: despite setting `OLLAMA_MODELS` | The env var needs a full PC restart (not just app restart) to take effect for Ollama's background service |
+| Conversion takes 20+ minutes | Model too large for available RAM — switch to a smaller model (see size table above) |
+| `[WinError 10061] ... actively refused it` | Ollama isn't running — reopen the Ollama app or run `ollama serve` |
+| Page looks unstyled / old after an update | Hard refresh the browser (`Ctrl+Shift+R`) after restarting the Flask server |
+| Files dropped in `inbox\` don't do anything | Make sure `python webapp\app.py` is the one running (not `watch_agent.py` or nothing) — the inbox watcher is built into `app.py` and only runs while it's active |
