@@ -9,63 +9,124 @@
 </head>
 <body>
 
-<header class="topbar">
-  <div class="topbar-left">
-    <span class="logo-mark">⚡</span>
-    <span class="logo-text">Spark Convert</span>
-  </div>
-  <div class="topbar-right">
-    <span class="status-pill">
-      <span class="dot dot-live"></span>
-      running locally
-    </span>
-    <span class="model-pill">{{ model_name }}</span>
-    <span class="attempts-pill">max {{ max_attempts }} attempts</span>
-  </div>
-</header>
+<div class="shell">
 
-<main class="stage">
+  <!-- ============ Sidebar ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="logo-mark">⚡</span>
+      <span class="logo-text">Spark Convert</span>
+      <button class="sidebar-close" id="sidebarClose" type="button" aria-label="Close menu">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg>
+      </button>
+    </div>
 
-  <section id="dropzone" class="dropzone">
-    <input type="file" id="fileInput" accept=".py,.sql,.r" multiple hidden>
-    <div class="dropzone-inner">
-      <div class="dropzone-icon">
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-          <path d="M12 3v12m0 0l-4-4m4 4l4-4" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
+    <button class="add-script-btn" id="addScriptBtn" type="button">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+      Add script
+    </button>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Settings</div>
+
+      <div class="setting-row">
+        <span class="setting-label">Model</span>
+        <span class="setting-value mono">{{ model_name }}</span>
       </div>
-      <p class="dropzone-title">Drop a script to convert</p>
-      <p class="dropzone-sub">.py &nbsp;·&nbsp; .sql &nbsp;·&nbsp; .r — the agent generates, checks, and self-repairs before handing it back</p>
-      <button class="browse-btn" id="browseBtn" type="button">Choose file</button>
-    </div>
-  </section>
 
-  <section class="queue-section">
-    <div class="queue-header" id="queueHeader" style="display:none;">
-      <span class="queue-title">Conversions</span>
-      <span class="queue-count" id="queueCount"></span>
-    </div>
-    <div class="queue" id="queue"></div>
-    <div class="queue-empty" id="queueEmpty">
-      <div class="queue-empty-icon">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-          <path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/>
-          <circle cx="12" cy="12" r="9"/>
-        </svg>
+      <div class="setting-row">
+        <span class="setting-label">Max attempts</span>
+        <div class="attempts-stepper">
+          <button class="stepper-btn" id="attemptsDown" type="button" aria-label="Decrease">−</button>
+          <span class="stepper-value" id="attemptsValue">{{ max_attempts }}</span>
+          <button class="stepper-btn" id="attemptsUp" type="button" aria-label="Increase">+</button>
+        </div>
       </div>
-      <span class="queue-empty-title">No conversions yet</span>
-      <span class="queue-empty-sub">Drop a .py, .sql, or .r file above to see it generate, validate, and export in real time.</span>
-    </div>
-  </section>
 
-</main>
+      <div class="setting-row">
+        <span class="setting-label">Status</span>
+        <span class="setting-value">
+          <span class="dot dot-live"></span>
+          local
+        </span>
+      </div>
+    </div>
+
+    <div class="sidebar-section sidebar-history">
+      <div class="sidebar-section-title">
+        History
+        <span class="history-count" id="historyCount"></span>
+      </div>
+      <div class="history-list" id="historyList">
+        <div class="history-empty" id="historyEmpty">No conversions yet</div>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      Nothing leaves this machine — every conversion runs through your local Ollama instance.
+    </div>
+  </aside>
+
+  <div class="sidebar-scrim" id="sidebarScrim"></div>
+
+  <!-- ============ Main ============ -->
+  <div class="main">
+
+    <header class="topbar">
+      <button class="menu-btn" id="menuBtn" type="button" aria-label="Open menu">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M3 12h18M3 18h18" stroke-linecap="round"/></svg>
+      </button>
+      <span class="topbar-title" id="topbarTitle">Conversions</span>
+      <button class="add-script-btn-top" id="addScriptBtnTop" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+        Add script
+      </button>
+    </header>
+
+    <main class="content">
+      <div class="queue" id="queue"></div>
+
+      <div class="queue-empty" id="queueEmpty">
+        <div class="queue-empty-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="12" cy="12" r="9"/>
+          </svg>
+        </div>
+        <span class="queue-empty-title">No conversions yet</span>
+        <span class="queue-empty-sub">Click "Add script" in the sidebar to convert a .py, .sql, or .r file to PySpark.</span>
+      </div>
+    </main>
+
+  </div>
+
+</div>
+
+<!-- ============ Add-script modal ============ -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <button class="modal-close" id="modalClose" type="button" aria-label="Close">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg>
+    </button>
+
+    <section id="dropzone" class="dropzone">
+      <input type="file" id="fileInput" accept=".py,.sql,.r" multiple hidden>
+      <div class="dropzone-inner">
+        <div class="dropzone-icon">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M12 3v12m0 0l-4-4m4 4l4-4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <p class="dropzone-title" id="modalTitle">Drop a script to convert</p>
+        <p class="dropzone-sub">.py &nbsp;·&nbsp; .sql &nbsp;·&nbsp; .r — the agent generates, checks, and self-repairs before handing it back</p>
+        <button class="browse-btn" id="browseBtn" type="button">Choose file</button>
+      </div>
+    </section>
+  </div>
+</div>
 
 <div class="toast-stack" id="toastStack" aria-live="polite"></div>
-
-<footer class="footbar">
-  <span>Nothing leaves this machine — every conversion runs through your local Ollama instance.</span>
-</footer>
 
 <template id="jobTemplate">
   <article class="job" data-job-id="">
@@ -88,7 +149,6 @@
       </div>
     </div>
 
-    <!-- Attempt dots: filled as each attempt runs -->
     <div class="job-attempt-track"></div>
 
     <div class="job-detail-row">
@@ -111,6 +171,13 @@
       <button class="job-repair-submit" type="button">Fix with this error</button>
     </div>
   </article>
+</template>
+
+<template id="historyItemTemplate">
+  <button class="history-item" type="button">
+    <span class="history-item-icon"></span>
+    <span class="history-item-name"></span>
+  </button>
 </template>
 
 <script src="/static/app.js"></script>
