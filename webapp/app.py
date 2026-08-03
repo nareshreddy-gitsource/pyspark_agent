@@ -21,6 +21,7 @@ Requirements:
 
 import argparse
 import json
+import shutil
 import sys
 import threading
 import time
@@ -28,6 +29,8 @@ import uuid
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_from_directory, render_template
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agent import run_agent, repair_with_external_error, build_notebook, build_html_report
@@ -37,6 +40,11 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 CONVERTED_DIR = BASE_DIR / "converted"
 UPLOAD_DIR.mkdir(exist_ok=True)
 CONVERTED_DIR.mkdir(exist_ok=True)
+
+INBOX_DIR = BASE_DIR.parent / "inbox"
+OUTBOX_DIR = BASE_DIR.parent / "outbox"
+INBOX_DIR.mkdir(exist_ok=True)
+OUTBOX_DIR.mkdir(exist_ok=True)
 
 SUPPORTED_EXTENSIONS = {".py", ".sql", ".r"}
 
@@ -51,6 +59,28 @@ CANCEL_FLAGS: dict[str, threading.Event] = {}
 MODEL_NAME = "qwen2.5-coder:14b"
 OLLAMA_HOST = None
 MAX_ATTEMPTS = 3
+
+
+def save_to_outbox(content: str, filename: str) -> Path:
+    """
+    Writes content to outbox/<filename>, auto-renaming on collision as
+    "name (1).ext", "name (2).ext", etc. -- never overwrites, never uses
+    version-number suffixes like _v1/_v2.
+    """
+    target = OUTBOX_DIR / filename
+    if not target.exists():
+        target.write_text(content, encoding="utf-8")
+        return target
+
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    counter = 1
+    while True:
+        candidate = OUTBOX_DIR / f"{stem} ({counter}){suffix}"
+        if not candidate.exists():
+            candidate.write_text(content, encoding="utf-8")
+            return candidate
+        counter += 1
 
 
 def update_job(job_id: str, **fields):
@@ -118,10 +148,19 @@ def run_conversion_job(job_id: str, saved_path: Path, original_name: str):
     code_path.write_text(result["code"], encoding="utf-8")
 
     if result["success"]:
+        notebook = build_notebook(
+            original_filename=original_name,
+            source_code=source_code,
+            pyspark_code=result["code"],
+            model=MODEL_NAME,
+            attempts=result["attempts"],
+        )
+        notebook_json = json.dumps(notebook, indent=1)
+        outbox_path = save_to_outbox(notebook_json, f"{stem}_pyspark.ipynb")
         update_job(
             job_id,
             status="done",
-            stage_detail=f"Passed validation on attempt {result['attempts']}/{MAX_ATTEMPTS}",
+            stage_detail=f"Passed validation on attempt {result['attempts']}/{MAX_ATTEMPTS} — saved to outbox/{outbox_path.name}",
             code=result["code"],
             attempts_used=result["attempts"],
             history=result["history"],
@@ -148,6 +187,97 @@ def run_conversion_job(job_id: str, saved_path: Path, original_name: str):
 
 class _Cancelled(Exception):
     pass
+
+
+def create_job(source_label: str, filename: str) -> str:
+    """
+    Registers a new job and kicks off its conversion thread. Used by both
+    the browser upload route and the inbox folder watcher, so both paths
+    behave identically and show up in the same UI.
+    """
+    job_id = uuid.uuid4().hex[:12]
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "id": job_id,
+            "filename": filename,
+            "source": source_label,  # "upload" or "inbox"
+            "status": "queued",
+            "stage_detail": "Waiting in queue",
+            "attempt": 0,
+            "max_attempts": MAX_ATTEMPTS,
+            "live_preview": "",
+            "submitted_at": time.time(),
+        }
+    CANCEL_FLAGS[job_id] = threading.Event()
+    return job_id
+
+
+def start_conversion_thread(job_id: str, saved_path: Path, original_name: str):
+    thread = threading.Thread(target=run_conversion_job, args=(job_id, saved_path, original_name), daemon=True)
+    thread.start()
+
+
+# --------------------------------------------------------------------------
+# Inbox folder watcher -- lets people drag files into inbox/ as an
+# alternative to using the browser's Add script modal. Runs the exact same
+# agent loop and shows up as a normal job card in the UI.
+# --------------------------------------------------------------------------
+
+class InboxHandler(FileSystemEventHandler):
+    def __init__(self):
+        self._recently_seen: set[str] = set()
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        self._handle(Path(event.src_path))
+
+    def on_moved(self, event):
+        if event.is_directory:
+            return
+        self._handle(Path(event.dest_path))
+
+    def _handle(self, path: Path):
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            return
+        if path.name in self._recently_seen:
+            return
+        self._recently_seen.add(path.name)
+
+        # Let the OS finish writing the file before reading it (drag-and-drop
+        # can fire the event before the copy completes).
+        time.sleep(0.4)
+        if not path.exists():
+            self._recently_seen.discard(path.name)
+            return
+
+        job_id = create_job(source_label="inbox", filename=path.name)
+        saved_path = UPLOAD_DIR / f"{job_id}_{path.name}"
+        try:
+            shutil.move(str(path), saved_path)
+        except Exception:
+            self._recently_seen.discard(path.name)
+            return
+
+        start_conversion_thread(job_id, saved_path, path.name)
+        self._recently_seen.discard(path.name)
+
+
+def process_existing_inbox_files(handler: InboxHandler):
+    """Pick up any files already sitting in inbox/ at server startup."""
+    for path in INBOX_DIR.iterdir():
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            handler._handle(path)
+
+
+def start_inbox_watcher():
+    handler = InboxHandler()
+    process_existing_inbox_files(handler)
+    observer = Observer()
+    observer.schedule(handler, str(INBOX_DIR), recursive=False)
+    observer.daemon = True
+    observer.start()
+    return observer
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -180,25 +310,11 @@ def upload():
     if suffix not in SUPPORTED_EXTENSIONS:
         return jsonify({"error": f"Unsupported file type '{suffix}'. Use .py, .sql, or .r"}), 400
 
-    job_id = uuid.uuid4().hex[:12]
+    job_id = create_job(source_label="upload", filename=file.filename)
     saved_path = UPLOAD_DIR / f"{job_id}_{file.filename}"
     file.save(saved_path)
 
-    with JOBS_LOCK:
-        JOBS[job_id] = {
-            "id": job_id,
-            "filename": file.filename,
-            "status": "queued",
-            "stage_detail": "Waiting in queue",
-            "attempt": 0,
-            "max_attempts": MAX_ATTEMPTS,
-            "live_preview": "",
-            "submitted_at": time.time(),
-        }
-    CANCEL_FLAGS[job_id] = threading.Event()
-
-    thread = threading.Thread(target=run_conversion_job, args=(job_id, saved_path, file.filename), daemon=True)
-    thread.start()
+    start_conversion_thread(job_id, saved_path, file.filename)
 
     return jsonify({"job_id": job_id})
 
@@ -241,11 +357,15 @@ def download(job_id):
     if not job or not job.get("output_code_filename"):
         return jsonify({"error": "File not ready"}), 404
     stem = Path(job["filename"]).stem
+    download_name = f"{stem}_pyspark.py"
+
+    save_to_outbox(job.get("code", ""), download_name)
+
     return send_from_directory(
         CONVERTED_DIR,
         job["output_code_filename"],
         as_attachment=True,
-        download_name=f"{stem}_pyspark.py",
+        download_name=download_name,
     )
 
 
@@ -265,9 +385,13 @@ def download_notebook(job_id):
     )
     stem = Path(job["filename"]).stem
     nb_path = CONVERTED_DIR / f"{job_id}_{stem}.ipynb"
-    nb_path.write_text(json.dumps(notebook, indent=1), encoding="utf-8")
+    notebook_json = json.dumps(notebook, indent=1)
+    nb_path.write_text(notebook_json, encoding="utf-8")
 
-    return send_from_directory(CONVERTED_DIR, nb_path.name, as_attachment=True, download_name=f"{stem}_pyspark.ipynb")
+    download_name = f"{stem}_pyspark.ipynb"
+    save_to_outbox(notebook_json, download_name)
+
+    return send_from_directory(CONVERTED_DIR, nb_path.name, as_attachment=True, download_name=download_name)
 
 
 @app.route("/download_html/<job_id>")
@@ -289,7 +413,10 @@ def download_html(job_id):
     html_path = CONVERTED_DIR / f"{job_id}_{stem}.html"
     html_path.write_text(html_report, encoding="utf-8")
 
-    return send_from_directory(CONVERTED_DIR, html_path.name, as_attachment=True, download_name=f"{stem}_pyspark.html")
+    download_name = f"{stem}_pyspark.html"
+    save_to_outbox(html_report, download_name)
+
+    return send_from_directory(CONVERTED_DIR, html_path.name, as_attachment=True, download_name=download_name)
 
 
 @app.route("/report_error/<job_id>", methods=["POST"])
@@ -337,10 +464,23 @@ def report_error(job_id):
     code_path.write_text(result["code"], encoding="utf-8")
 
     status_val = "done" if result["success"] else "needs_repair"
+    stage_detail = "Repaired and re-validated" if result["success"] else f"Still invalid: {result['last_error']}"
+
+    if result["success"]:
+        notebook = build_notebook(
+            original_filename=job["filename"],
+            source_code=job.get("source_code", ""),
+            pyspark_code=result["code"],
+            model=MODEL_NAME,
+            attempts=job.get("attempts_used", 1) + 1,
+        )
+        outbox_path = save_to_outbox(json.dumps(notebook, indent=1), f"{stem}_pyspark.ipynb")
+        stage_detail += f" — saved to outbox/{outbox_path.name}"
+
     update_job(
         job_id,
         status=status_val,
-        stage_detail="Repaired and re-validated" if result["success"] else f"Still invalid: {result['last_error']}",
+        stage_detail=stage_detail,
         code=result["code"],
         attempts_used=job.get("attempts_used", 1) + 1,
         preview=result["code"][:4000],
@@ -373,7 +513,10 @@ def main():
     print(f"  Model:        {MODEL_NAME}")
     print(f"  Max attempts: {MAX_ATTEMPTS}")
     print(f"  Open:         http://localhost:{args.port}")
+    print(f"  Watching:     {INBOX_DIR}  (drop .py/.sql/.r files here too)")
     print("=" * 60)
+
+    start_inbox_watcher()
 
     app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
 
