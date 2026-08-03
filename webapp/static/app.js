@@ -30,6 +30,7 @@ const jobElements = {};
 const jobTimers = {};
 const jobMaxAttemptsSeen = {};
 const historyElements = {};
+const knownJobIds = new Set();
 
 const TERMINAL_STATUSES = ['done', 'failed', 'stopped', 'needs_repair'];
 
@@ -175,6 +176,7 @@ function uploadFile(file) {
       const realId = data.job_id;
       el.dataset.jobId = realId;
       jobElements[realId] = el;
+      knownJobIds.add(realId);
       delete jobElements[tempId];
       renameHistoryItem(tempId, realId);
       wireJobActions(realId, el);
@@ -338,6 +340,12 @@ function applyJobState(jobId, job) {
   detailText.classList.remove('done', 'failed', 'stopped', 'needs_repair');
   if (TERMINAL_STATUSES.includes(job.status)) detailText.classList.add(job.status);
 
+  if (job.source === 'inbox') {
+    const badge = el.querySelector('.job-source-badge');
+    badge.textContent = 'inbox';
+    badge.classList.add('show');
+  }
+
   if (job.max_attempts) {
     renderAttemptTrack(el, jobId, job);
     const badge = el.querySelector('.job-attempt-badge');
@@ -471,3 +479,40 @@ window.addEventListener('load', () => {
     showToast('error', 'Server unreachable', 'Could not connect to the Spark Convert backend. Make sure python webapp/app.py is running.', 0);
   });
 });
+
+// ================= Discover jobs created outside the browser =================
+// (e.g. files dropped into inbox/ and picked up by the folder watcher)
+
+function discoverExternalJobs() {
+  fetch('/jobs')
+    .then(res => res.json())
+    .then(jobs => {
+      jobs.forEach(job => {
+        if (knownJobIds.has(job.id) || jobElements[job.id]) return;
+        if (job.source !== 'inbox') return;
+
+        knownJobIds.add(job.id);
+        const el = createJobCard(job.id, job.filename);
+        showQueue();
+        queue.prepend(el);
+        jobElements[job.id] = el;
+        wireJobActions(job.id, el);
+        startTimer(job.id, el);
+        addHistoryItem(job.id, job.filename, job.status || 'queued');
+        applyJobState(job.id, job);
+        updateHistoryStatus(job.id, job.status);
+
+        if (!TERMINAL_STATUSES.includes(job.status)) {
+          pollStatus(job.id, job.filename);
+        } else {
+          stopTimer(job.id);
+        }
+
+        showToast('info', 'Picked up from inbox', `${job.filename} was dropped in the inbox folder and is being converted.`);
+      });
+    })
+    .catch(() => {});
+}
+
+setInterval(discoverExternalJobs, 2000);
+discoverExternalJobs();

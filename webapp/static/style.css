@@ -89,7 +89,7 @@ img, svg { display: block; }
 .sidebar .sidebar-footer { color: #6b6f7a !important; }
 .sidebar .history-empty { color: #6b6f7a !important; }
 .sidebar .history-item { color: #9ca0aa !important; }
-.sidebar .history-item:hover { color: #f2f3f5 !important; }
+.sidebar .history-item:hover { color: #ffffff !important; background: #24262d !important; }
 .sidebar .history-count { color: #6b6f7a !important; }
 .sidebar .stepper-value { color: #ffffff !important; }
 .sidebar .stepper-btn { color: #9ca0aa !important; }
@@ -193,7 +193,7 @@ img, svg { display: block; }
   width: 100%;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.history-item:hover { background: var(--surface-2); color: var(--text); }
+.history-item:hover { background: #24262d; color: #ffffff; }
 .history-item-icon { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); }
 .history-item-icon.done { background: var(--ok); }
 .history-item-icon.failed, .history-item-icon.needs_repair { background: var(--err); }
@@ -370,6 +370,13 @@ img, svg { display: block; }
 .job-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .job-file-icon { color: var(--text-muted); flex-shrink: 0; }
 .job-filename { font-size: 13.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.job-source-badge {
+  display: none;
+  font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--border);
+  padding: 2px 6px; border-radius: 999px; flex-shrink: 0;
+}
+.job-source-badge.show { display: inline-block; }
 
 .job-status-icon { width: 15px; height: 15px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .job-status-icon svg { width: 100%; height: 100%; }
