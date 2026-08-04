@@ -28,7 +28,6 @@ const historyCount = document.getElementById('historyCount');
 
 const jobElements = {};
 const jobTimers = {};
-const jobMaxAttemptsSeen = {};
 const historyElements = {};
 const knownJobIds = new Set();
 
@@ -267,6 +266,15 @@ function wireJobActions(jobId, el) {
     if (!errorText) { repairInput.focus(); return; }
     repairSubmit.disabled = true;
     repairSubmit.textContent = 'Fixing…';
+
+    const filename = el.querySelector('.job-filename').textContent;
+
+    // Start polling immediately -- the POST below doesn't resolve until the
+    // whole repair (generate + validate) finishes server-side, so waiting
+    // for its response before polling would mean the graph never animates
+    // during the fix, only jumping to the final state at the end.
+    pollStatus(jobId, filename);
+
     fetch(`/report_error/${jobId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -277,7 +285,6 @@ function wireJobActions(jobId, el) {
         repairSubmit.disabled = false;
         repairSubmit.textContent = 'Fix with this error';
         repairInput.value = '';
-        pollStatus(jobId, el.querySelector('.job-filename').textContent);
       })
       .catch(() => {
         repairSubmit.disabled = false;
@@ -347,7 +354,7 @@ function applyJobState(jobId, job) {
   }
 
   if (job.max_attempts) {
-    renderAttemptTrack(el, jobId, job);
+    renderPipelineGraph(el, jobId, job);
     const badge = el.querySelector('.job-attempt-badge');
     if (job.attempt && job.max_attempts > 1) {
       badge.textContent = `attempt ${job.attempt}/${job.max_attempts}`;
@@ -369,38 +376,114 @@ function applyJobState(jobId, job) {
   }
 }
 
-function renderAttemptTrack(el, jobId, job) {
-  const track = el.querySelector('.job-attempt-track');
-  const total = job.max_attempts || 1;
+// ================= Pipeline graph (Databricks-lineage style) =================
+//
+// Renders 4 nodes -- Read, Generate, Validate, Output -- as an SVG DAG.
+// When a repair attempt is in progress (attempt > 1), a dashed red edge
+// loops back from Validate to Generate to visualize the retry.
 
-  if (jobMaxAttemptsSeen[jobId] !== total) {
-    track.innerHTML = '';
-    for (let i = 0; i < total; i++) {
-      const seg = document.createElement('div');
-      seg.className = 'attempt-segment';
-      track.appendChild(seg);
-    }
-    jobMaxAttemptsSeen[jobId] = total;
+const NODE_ICONS = {
+  read: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+  generate: '<path d="M12 3a9 9 0 1 0 9 9"/>', // spinner arc reused as a "working" glyph; static when not active
+  validate: '<path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/>',
+  output: '<path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
+};
+
+function nodeState(nodeKey, job) {
+  const status = job.status;
+  const attempt = job.attempt || 1;
+
+  // "read" completes almost instantly once any attempt has started
+  if (nodeKey === 'read') {
+    return (status && status !== 'queued') ? 'passed' : 'pending';
   }
 
-  const segments = track.querySelectorAll('.attempt-segment');
-  const currentAttempt = job.attempt || 1;
+  if (nodeKey === 'generate') {
+    if (status === 'generating') return 'active';
+    if (status === 'validating' || status === 'done') return 'passed';
+    if (status === 'needs_repair' || status === 'failed') return attempt > 1 ? 'passed' : 'failed';
+    return 'pending';
+  }
 
-  segments.forEach((seg, idx) => {
-    seg.classList.remove('active', 'passed', 'failed');
-    const segAttempt = idx + 1;
-    if (segAttempt < currentAttempt) {
-      seg.classList.add('passed');
-    } else if (segAttempt === currentAttempt) {
-      if (job.status === 'generating' || job.status === 'validating') {
-        seg.classList.add('active');
-      } else if (job.status === 'done') {
-        seg.classList.add('passed');
-      } else if (job.status === 'failed' || job.status === 'needs_repair') {
-        seg.classList.add('failed');
-      }
+  if (nodeKey === 'validate') {
+    if (status === 'validating') return 'active';
+    if (status === 'done') return 'passed';
+    if (status === 'needs_repair' || status === 'failed') return 'failed';
+    return 'pending';
+  }
+
+  if (nodeKey === 'output') {
+    if (status === 'done') return 'passed';
+    return 'pending';
+  }
+
+  return 'pending';
+}
+
+function renderPipelineGraph(el, jobId, job) {
+  const container = el.querySelector('.job-graph');
+  const nodes = [
+    { key: 'read', title: 'Read', subtitle: 'source file', icon: NODE_ICONS.read },
+    { key: 'generate', title: 'Generate', subtitle: job.attempt ? `attempt ${job.attempt}` : 'pyspark code', icon: NODE_ICONS.generate },
+    { key: 'validate', title: 'Validate', subtitle: 'ast.parse()', icon: NODE_ICONS.validate },
+    { key: 'output', title: 'Output', subtitle: '.ipynb / .py', icon: NODE_ICONS.output },
+  ];
+
+  const states = nodes.map(n => nodeState(n.key, job));
+  const showRetryLoop = (job.attempt || 1) > 1 && ['generating', 'validating', 'needs_repair'].includes(job.status);
+
+  const boxW = 108, boxH = 54, gapX = 34, topPad = showRetryLoop ? 30 : 6;
+  const svgW = nodes.length * boxW + (nodes.length - 1) * gapX + 4;
+  const svgH = boxH + topPad + 6;
+
+  let edges = '';
+  let nodesHtml = '';
+
+  nodes.forEach((n, i) => {
+    const x = 2 + i * (boxW + gapX);
+    const y = topPad;
+    const state = states[i];
+    const iconIsSpinning = state === 'active' && n.key === 'generate';
+
+    nodesHtml += `
+      <g class="graph-node ${state}" transform="translate(${x},${y})">
+        <rect class="graph-node-box" width="${boxW}" height="${boxH}" rx="8"/>
+        <rect class="graph-node-topbar" x="0" y="0" width="${boxW}" height="3" rx="1.5"/>
+        <g class="graph-node-icon" transform="translate(10,12)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <g class="${iconIsSpinning ? 'spinner' : ''}" style="transform-origin:12px 12px;">${n.icon}</g>
+          </svg>
+        </g>
+        <text class="graph-node-title" x="30" y="20">${n.title}</text>
+        <text class="graph-node-subtitle" x="10" y="40">${n.subtitle}</text>
+        <circle class="graph-dot d1" cx="12" cy="46" r="2.5"/>
+      </g>`;
+
+    if (i < nodes.length - 1) {
+      const x1 = x + boxW, x2 = x + boxW + gapX;
+      const yMid = y + boxH / 2;
+      const edgeClass = (states[i] === 'passed') ? 'passed' : '';
+      edges += `<path class="graph-edge ${edgeClass}" d="M${x1},${yMid} C${x1 + gapX / 2},${yMid} ${x2 - gapX / 2},${yMid} ${x2},${yMid}"/>`;
     }
   });
+
+  if (showRetryLoop) {
+    const genX = 2 + 1 * (boxW + gapX) + boxW / 2;
+    const valX = 2 + 2 * (boxW + gapX) + boxW / 2;
+    const topY = topPad - 14;
+    edges += `<path class="graph-edge retry" d="M${valX},${topPad} C${valX},${topY} ${genX},${topY} ${genX},${topPad}" marker-end="url(#retryArrow)"/>`;
+  }
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${svgW} ${svgH}" width="${svgW}" height="${svgH}">
+      <defs>
+        <marker id="retryArrow" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
+          <path d="M0,0 L7,3.5 L0,7 Z" fill="var(--err)"/>
+        </marker>
+      </defs>
+      ${edges}
+      ${nodesHtml}
+    </svg>`;
 }
 
 function applyStatusClass(jobId, status) {
